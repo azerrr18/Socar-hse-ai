@@ -1,5 +1,4 @@
 #First, download the dataset
-import torch
 import urllib.request
 import zipfile
 import os
