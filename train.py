@@ -10,10 +10,14 @@ def main():
     data_yaml = r"C:\Users\Azer\Desktop\Security\Security\data.yaml"
 
     results = model.train(data=data_yaml,
-                          epochs=15,
+                          epochs=100,
                           imgsz=640,
                           batch=16,
-                          device=0)
+                          device=0,
+                          workers=0,
+                          patience=30,
+                          project="ppe-runs",
+                          name="train_v2")
 
 if __name__ == "__main__":
     main()

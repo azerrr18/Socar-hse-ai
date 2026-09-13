@@ -1,7 +1,7 @@
 from ultralytics import YOLO
 
 def main():
-    model = YOLO(r"C:\Users\Azer\Desktop\Security\yolov8n.pt")
+    model = YOLO(r"C:\Users\Azer\Desktop\Security\runs\detect\train\weights\best.pt")
     data_yaml = r"C:\Users\Azer\Desktop\Security\Security\data.yaml"
 
     print("===Execute Validation===")
