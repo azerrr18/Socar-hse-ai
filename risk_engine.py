@@ -7,7 +7,7 @@ from typing import List, Optional,Dict
 import time,math
 
 ppe_classes = {"helmet","gloves","vest","boots","goggles"}
-person_classes =  "Person"
+person_classes = {"Person"}
 
 @dataclass
 class RiskEvent:
@@ -58,7 +58,7 @@ def center_dist(box_a,box_b):
     bx,by = center_box(box_b)
     return math.sqrt((ax-bx)**2+(ay-by)**2)
 
-class PersonTrecker:
+class PersonTracker:
     def __init__(self,max_distance: float = 80.0,max_frames_missing: int = 15):
         self.max_distance = max_distance
         self.max_frames_missing = max_frames_missing
@@ -86,9 +86,9 @@ class PersonTrecker:
                 best_id = self.next_id
                 self.next_id += 1
 
-                used_id_tracks.add(best_id)
-                self.tracks[best_id] = {"box":box,"last_seen":frame_id}
-                assigned[best_id] = box
+            used_id_tracks.add(best_id)
+            self.tracks[best_id] = {"box":box,"last_seen":frame_id}
+            assigned[best_id] = box
 
         stale = [tid for tid,info in self.tracks.items()
                  if frame_id - info["last_seen"]>self.max_frames_missing]
@@ -97,7 +97,7 @@ class PersonTrecker:
 
         return assigned
 
-class ViolationTrecker:
+class ViolationTracker:
     def __init__(self,min_consecutive_frames : int=5):
         self.min_consecutive_frames = min_consecutive_frames
         self.streaks = {}
@@ -113,7 +113,7 @@ class ViolationTrecker:
             self.already_confirmed.discard(track_id)
 
         streak = self.streaks[track_id]
-        if streak>self.min_consecutive_frames and track_id not in self.already_confirmed:
+        if streak>=self.min_consecutive_frames and track_id not in self.already_confirmed:
             self.already_confirmed.add(track_id)
             return True,streak
         return False,streak
@@ -130,8 +130,8 @@ class RiskEngine:
         self.overlap_treshold = overlap_treshold
         self.person_conf_treshold = person_conf_treshold
         self.ppe_conf_treshold = ppe_conf_treshold
-        self.trackers = PersonTrecker(max_distance=max_track_distance)
-        self.violations = ViolationTrecker(min_consecutive_frames=min_consecutive_frames)
+        self.trackers = PersonTracker(max_distance=max_track_distance)
+        self.violations = ViolationTracker(min_consecutive_frames=min_consecutive_frames)
 
 
     def process_frame(self, result, frame_id:int=0) -> List[RiskEvent]:
@@ -147,15 +147,14 @@ class RiskEngine:
             cls_name = names[cls_id]
             xyxy = tuple(box.xyxy[0].tolist())
 
-            if cls_name == person_classes and conf >= self.person_conf_treshold:
+            if cls_name in person_classes and conf >= self.person_conf_treshold:
                 persons.append((xyxy,conf))
             elif cls_name in ppe_classes and conf >= self.ppe_conf_treshold:
                 ppe_boxes[cls_name].append(xyxy)
 
-            person_boxes_only = [p[0] for p in persons]
-            assigned_tracks = self.trackers.update_self(person_boxes_only,frame_id)
-
-            box_to_track_id = {box:tid for tid,box in assigned_tracks.items()}
+        person_boxes_only = [p[0] for p in persons]
+        assigned_tracks = self.trackers.update_self(person_boxes_only,frame_id)
+        box_to_track_id = {box:tid for tid,box in assigned_tracks.items()}
 
         for person_box,person_conf in persons:
             search_area = expand_box(person_box,frame_h,frame_w)
@@ -170,14 +169,26 @@ class RiskEngine:
                     missing.append(ppe_class)
             track_id = box_to_track_id.get(person_box)
 
-
-            if missing:
+            if missing and track_id is not None:
+                confirmed, streak = self.violations.update_violation(track_id, missing)
+                if confirmed:
+                    events.append(RiskEvent(
+                        frame_id=frame_id,
+                        person_bbox=person_box,
+                        missing_ppe=missing,
+                        person_conf=person_conf
+                    ))
+            elif missing:
+                # No track_id available, emit immediately
                 events.append(RiskEvent(
                     frame_id=frame_id,
                     person_bbox=person_box,
                     missing_ppe=missing,
                     person_conf=person_conf
                 ))
+            elif track_id is not None:
+                # Person has all PPE — reset their violation streak
+                self.violations.update_violation(track_id, [])
         return events
 # ---------------------------------------------------------------------------
 #Loading the model

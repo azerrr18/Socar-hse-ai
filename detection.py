@@ -1,6 +1,5 @@
 import cv2
 from risk_engine import RiskEngine,ppe_classes,person_classes
-from torch.ao.quantization import per_channel_dynamic_qconfig
 from ultralytics import YOLO
 
 model_path = r"C:\Users\Azer\Desktop\Security\runs\detect\train\weights\best.pt"
@@ -45,7 +44,7 @@ def main():
                 cls_name = result.names[cls_id]
                 xyxy = tuple(box.xyxy[0].tolist())
 
-                if cls_name == person_classes:
+                if cls_name in person_classes:
                     is_violation = xyxy in violated_persons
                     color = color_violation if is_violation else color_person_ok
                     label = f"Person: {conf:.2f}" + (" - VIOLATION" if is_violation else " - OK")

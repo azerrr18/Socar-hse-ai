@@ -2,7 +2,7 @@ import sqlite3
 import json 
 import os
 import time
-from datetime import datetime,time
+from datetime import datetime, time as dt_time
 
 
 #initialize the database for our project
@@ -11,7 +11,17 @@ DB_PATH = os.path.join(os.path.dirname(__file__),"events.db")
 
 def init_db(db_path=DB_PATH):
     conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("""CREATE TABLE IF NOT EXISTS videos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename TEXT NOT NULL,
+    filepath TEXT NOT NULL,
+    uploaded_at REAL NOT NULL,
+    duration_sec REAL,
+    fps REAL,
+    status TEXT DEFAULT 'pending' /* pending|processing|done|error */) """)
+
     conn.execute("""CREATE TABLE IF NOT EXISTS events(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     video_id INTEGER NOT NULL,
@@ -24,40 +34,17 @@ def init_db(db_path=DB_PATH):
     acknowledged INTEGER DEFAULT 0,
     FOREIGN KEY(video_id) REFERENCES videos(id) ON DELETE CASCADE)""")
 
-    #CREATING SECOND TABLE
-    conn.execute("""CREATE TABLE IF NOT EXISTS videos (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    video_id INTEGER NOT NULL,
-    filename TEXT NOT NULL,
-    filepath TEXT NOT NULL,
-    uploaded_at REAL NOT NULL,
-    duration_sec REAL NOT NULL,
-    fps REAL,
-    status TEXT DEFAULT 'pending' --pending|processing|done|error) """)
-    
     conn.commit()
     return conn
 
 
 
-def save_event(conn,event):
-    #insert new event into database
-    conn.execute("INSERT INTO events(frame_id,missing_ppe,person_conf,timestamp) "
-    "VALUES (?,?,?,?)",(
-        event.frame_id,
-        json.dumps(event.missing_ppe),
-        event.person_conf,
-        event.timestamp
-    ),
-    )
-    conn.commit()
-
 def get_video_stats(conn):
     #summary statistics for dashboard
-    total_videos = conn.execute("SELECT COUNT(DISTINCT video_id) FROM videos").fetchone()[0]
+    total_videos = conn.execute("SELECT COUNT(*) FROM videos").fetchone()[0]
     total_events = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
     active_today = conn.execute("SELECT COUNT(*) FROM events WHERE date(timestamp)=date('now')").fetchone()[0]
-    unique_persons = conn.execute("SELECT COUNT(DISTINCT person_id) FROM events").fetchone()[0]
+    unique_persons = conn.execute("SELECT COUNT(DISTINCT track_id) FROM events").fetchone()[0]
 
     return {"total_videos":total_videos,
             "total_events":total_events,
@@ -66,21 +53,20 @@ def get_video_stats(conn):
 
 """ Adding and deleting the video: """  
 def add_video(conn,filename:str,filepath:str,duration:float=None,fps:float=None) -> int:
-    cur = conn.execute("INSERT INTO videos (filename,filepath,uploaded_at,duration,fps)  VALUES (?,?,?,?,?)",
-    (filepath,filename,time.time(),duration,fps),)
+    cur = conn.execute("INSERT INTO videos (filename,filepath,uploaded_at,duration_sec,fps)  VALUES (?,?,?,?,?)",
+    (filename,filepath,time.time(),duration,fps),)
     conn.commit()
     return cur.lastrowid
 
 def delete_video(conn,video_id:int):
     #Deletes the video and all data about the video
     row = conn.execute("SELECT filepath FROM videos WHERE id=?",(video_id,)).fetchone()
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("DELETE FROM videos WHERE id=?",(video_id,))
     conn.execute("DELETE FROM events WHERE video_id=?",(video_id,))
+    conn.execute("DELETE FROM videos WHERE id=?",(video_id,))
     conn.commit()
-    if row and row['filepath'] and os.path.exists(row['filepath']):
+    if row and row[0] and os.path.exists(row[0]):
         try:
-            os.remove(row['filepath'])
+            os.remove(row[0])
         except OSError:
             pass
             
@@ -111,7 +97,8 @@ def save_event(conn,video_id:int,event,timestamp:float=None) :
         json.dumps(event.missing_ppe),
         event.person_conf,
         event.timestamp,
-        getattr(event,"track_id",None)
+        getattr(event,"track_id",None),
+        time.time()
     ))
     conn.commit()
 
@@ -128,8 +115,71 @@ def get_events_for_video(conn,video_id:int):
 def get_all_events(conn,start_date=None,end_date=None):
     query = """SELECT events.*, videos.filename as video_filename
     FROM events 
-    JOIN videos on events.video_id = videos.video_id"""
+    JOIN videos ON events.video_id = videos.id"""
 
+    params = []
+    conditions=[]
+    if start_date :
+        conditions.append("events.created_at >= ?")
+        params.append(datetime.combine(start_date, dt_time.min).timestamp())
+    if end_date:
+        conditions.append("events.created_at <= ?")
+        params.append(datetime.combine(end_date, dt_time.max).timestamp())
+    
+    if conditions:
+        query += " WHERE "+ " AND ".join(conditions)
+    query += " ORDER BY events.created_at DESC"
+
+    rows = conn.execute(query,params).fetchall()
+    events = []
+    for r in rows:
+        d = dict(r)
+        d["missing_ppe"] = json.loads(d["missing_ppe"])
+        events.append(d)
+    return events
+
+def acknowledge_event(conn,event_id:int):
+    conn.execute("UPDATE events SET acknowledged=1 WHERE id=?",(event_id,))
+    conn.commit()
+    
+def delete_event(conn,event_id:int):
+    conn.execute("DELETE FROM events WHERE id=?",(event_id,))
+    conn.commit()
+
+"""-----------------------------------------------
+Statistics for dashboard
+-------------------------------------------------- """    
+
+def get_violation_summary(conn):
+    #summary statistics for dashboard
+    total_violations = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    violations_today = conn.execute("SELECT COUNT(*) FROM events WHERE date(timestamp)=date('now')").fetchone()[0]
+    unique_persons = conn.execute("SELECT COUNT(DISTINCT track_id) FROM events").fetchone()[0]
+    severity_counts = conn.execute("SELECT missing_ppe,COUNT(*) FROM events GROUP BY missing_ppe").fetchall()
+    return {
+        "total_violations":total_violations,
+        "violations_today":violations_today,
+        "unique_persons":unique_persons,
+        "severity_counts":severity_counts
+        }
+    
+def get_summary_stats(conn):
+    total_videos = conn.execute("SELECT COUNT(*) AS c FROM videos").fetchone()[0]
+    total_events = conn.execute("SELECT COUNT(*) AS c FROM events").fetchone()[0]
+    unique_persons = conn.execute("SELECT COUNT(DISTINCT track_id) FROM events WHERE track_id IS NOT NULL").fetchone()[0]
+    today_start = datetime.combine(datetime.today(), dt_time.min).timestamp()
+    events_today = conn.execute(
+        "SELECT COUNT(*) AS c FROM events WHERE created_at >= ?", (today_start,)
+    ).fetchone()[0]
+
+    return {
+        "total_videos": total_videos,
+        "total_events": total_events,
+        "unique_persons": unique_persons,
+        "events_today": events_today,
+    }
+
+    
 
 #now we define some test values to check it
 if __name__ == "__main__":
@@ -140,14 +190,15 @@ if __name__ == "__main__":
     model = YOLO(r"C:\Users\Azer\Desktop\Security\runs\detect\ppe-runs\train_v2\weights\best.pt")
     engine = RiskEngine(reqiured_ppe=["helmet","vest"],min_consecutive_frames=5)
     test_video_path = r"C:\Users\Azer\Desktop\Security\19832492-hd_1920_1080_25fps.mp4"
+    
+    video_id = add_video(conn, "test_video.mp4", test_video_path)
     frame_id = 0
-
 
     for result in model.predict(source=test_video_path,stream=True, verbose=False):
         events = engine.process_frame(result,frame_id=frame_id)
 
         for e in events:
-            save_event(conn,e)
+            save_event(conn, video_id, e)
             print(f"[Frame {frame_id}] Saved violation: {e.missing_ppe}")
         frame_id +=1
         

@@ -5,7 +5,7 @@ import os
 
 zip_url = "https://github.com/ultralytics/assets/releases/download/v0.0.0/construction-ppe.zip"
 folder = "Security"
-zip_path = os.path.join(folder, "Security/construction-ppe.zip")
+zip_path = os.path.join(folder, "construction-ppe.zip")
 
 #create folder if doesn't exis
 os.makedirs(folder, exist_ok=True)
